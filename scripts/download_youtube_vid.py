@@ -16,7 +16,8 @@ ydl_opts = {
     'outtmpl': '../data/videos/%(title)s.%(ext)s',
 }
 
-url = 'https://www.youtube.com/watch?v=Xii9_oWQ7HY'
+url = 'https://www.youtube.com/watch?v=gAuJlwnUqMs'
+#'https://www.youtube.com/watch?v=Xii9_oWQ7HY'
 short = 'https://youtube.com/shorts/yC5nZnWXOYM'
 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
     ydl.download([url])

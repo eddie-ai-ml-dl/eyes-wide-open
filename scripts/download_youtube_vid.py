@@ -16,6 +16,8 @@ ydl_opts = {
     'outtmpl': '../data/videos/%(title)s.%(ext)s',
 }
 
+''' https://www.youtube.com/watch?v=YzcawvDGe4Y '''
+
 url = 'https://www.youtube.com/watch?v=gAuJlwnUqMs'
 #'https://www.youtube.com/watch?v=Xii9_oWQ7HY'
 short = 'https://youtube.com/shorts/yC5nZnWXOYM'

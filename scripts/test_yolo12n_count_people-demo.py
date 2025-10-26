@@ -1,8 +1,5 @@
 # Import required libraries
-from curses.textpad import rectangle
-
 import cv2
-from torch.backends.mkl import verbose
 from ultralytics import YOLO
 import cvzone
 

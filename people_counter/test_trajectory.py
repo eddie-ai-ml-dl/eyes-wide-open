@@ -31,7 +31,7 @@ def load_trajectory(csv_path):
             coords.append((x, y))
     return coords
 
-trajectory_file ="data/test_trajectory_1.csv"
+trajectory_file ="data/test_traj_accross_out.csv"
 trajectory = load_trajectory(trajectory_file)
 
 # -----------------------------

@@ -14,7 +14,7 @@ def save_curve_config(points, filepath):
 def load_curve_config(filepath):
     try:
         with open(filepath, 'r') as f:
-            return json.load(f)['curve_points']
+            return json.load(f)
     except Exception:
         return None
 

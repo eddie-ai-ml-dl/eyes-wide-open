@@ -5,6 +5,7 @@ import cvzone
 from modules.curve_manager import CurveManager
 from modules.tracker_logic import update_track_state, signed_distance_to_curve
 from utils.viz_tools import plot_trajectory
+import json
 
 # -------------------------
 # CONFIG
@@ -37,17 +38,8 @@ if not curve_data:
     if not curve_data:
         print("Curve creation cancelled.")
         exit()
-    cm.save_curve_config(curve_data)
 
 user_curve_np = np.array(curve_data["curve_points"], dtype=np.float32)
-in_direction = curve_data.get("IN_direction", "auto")
-
-# -------------------------
-# Build INSIDE polygon
-# -------------------------
-INSIDE_REGION = CurveManager.build_inside_region(
-    user_curve_np, in_direction, (h, w)
-)
 
 # -------------------------
 # State tracking
@@ -59,7 +51,13 @@ in_count = out_count = 0
 frame_idx = 0
 orientation_determined = False
 sample_anchors = []
+inside_region = None
+resolved_in_direction = None
+orientation = None
 
+# -------------------------
+# Video processing loop
+# -------------------------
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -80,7 +78,7 @@ while True:
         boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
         for track_id, box in zip(ids, boxes):
             x1, y1, x2, y2 = box
-            anchor = (float((x1 + x2)/2), float(y2))
+            anchor = (float((x1 + x2) / 2), float(y2))
             anchors_in_frame.append(anchor)
 
     # -------------------------
@@ -89,10 +87,33 @@ while True:
     if not orientation_determined:
         sample_anchors.extend(anchors_in_frame)
         if len(sample_anchors) >= 10:
-            orientation, diag = cm.determine_orientation(sample_anchors)
+            orientation, diag, resolved_in_direction = cm.determine_orientation(sample_anchors)
+
+            # Round diagnostics numbers to 2 decimal places
+            # if diag:
+            #     def round_recursive(d):
+            #         if isinstance(d, dict):
+            #             return {k: round_recursive(v) for k, v in d.items()}
+            #         elif isinstance(d, list):
+            #             return [round_recursive(v) for v in d]
+            #         elif isinstance(d, float):
+            #             return round(d, 2)
+            #         else:
+            #             return d
+            #     diag_rounded = round_recursive(diag)
+            #     curve_data["orientation_diagnostics"] = diag_rounded
+            #     cm.save_curve_config(curve_data)
+
+            # Build inside_region now that direction is resolved
+            inside_region = CurveManager.build_inside_region(user_curve_np, resolved_in_direction, (h, w))
+
             orientation_determined = True
-            print(f"Using orientation: {orientation}")
+            print(f"Orientation determined: {orientation}, IN_direction: {resolved_in_direction}")
     else:
+        # Build inside_region once if not yet built (for subsequent frames)
+        if inside_region is None:
+            inside_region = CurveManager.build_inside_region(user_curve_np, resolved_in_direction, (h, w))
+
         # -------------------------
         # Update track states and counting
         # -------------------------
@@ -105,9 +126,8 @@ while True:
                 cx, cy = int((x1 + x2) / 2), int(y2)
                 trajectory_data["path"].append((cx, cy))
 
-            prev_out_count = out_count
             in_count, out_count = update_track_state(
-                track_id, anchor, track_states, user_curve_np, INSIDE_REGION, in_count, out_count
+                track_id, anchor, track_states, user_curve_np, inside_region, in_count, out_count
             )
 
             # Visuals

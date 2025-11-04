@@ -2,15 +2,29 @@
 
 ## **Overview**
 
-This application performs **person detection, tracking, and directional counting (IN/OUT)** from a **video feed**.
-It is designed for **entrance/exit monitoring**, for example, counting how many people enter or leave a building through a main doorway.
+This application performs **person detection, tracking, and directional counting (IN/OUT)** using a **video feed**.
+It is designed for **entrance/exit monitoring**, such as tracking how many people enter or leave a building.
 
-The system combines:
+The system integrates:
 
-* YOLO-based person detection
-* A tracker (BotSort)
-* A geometric **curve-based boundary**
-* **Trajectory analysis** with **automatic orientation determination**
+* **YOLO-based person detection**
+* **BotSort tracking**
+* A **curve-based boundary** (the virtual counting line)
+* **Automatic orientation detection**
+* Persistent **diagnostics and camera orientation**
+
+---
+
+## **System Architecture**
+
+| Component               | Description                                                      |
+| ----------------------- | ---------------------------------------------------------------- |
+| **YOLO model**          | Detects people (class 0).                                        |
+| **BotSort tracker**     | Assigns unique IDs and maintains motion continuity.              |
+| **CurveManager**        | Manages curve configuration, orientation, and persistence.       |
+| **Orientation Module**  | Determines whether movement is toward or away from the entrance. |
+| **Tracker Logic**       | Updates IN/OUT counts based on curve crossings.                  |
+| **Visualization Tools** | Optional plotting and debugging for trajectories.                |
 
 ---
 
@@ -18,15 +32,17 @@ The system combines:
 
 ### **Camera Orientation**
 
-* The **default setup** assumes the **camera is front-facing**, i.e., mounted inside the building and looking toward the entrance.
-* The **curve** (the counting line) is drawn **across the entrance** — near the door threshold.
-* When a person **walks toward the camera** (toward the entrance) and crosses the curve, they are labeled **IN**.
-* When a person **walks away from the camera** and crosses the curve, they are labeled **OUT**.
+* Default: **camera faces the entrance** (inside the building).
+* The user draws a **curve** across the entrance area.
+* The system then counts:
+
+  * **Toward the camera → IN** (entering)
+  * **Away from the camera → OUT** (exiting)
 
 > **Summary:**
 >
-> * **Toward camera → IN** (entering the building)
-> * **Away from camera → OUT** (leaving the building)
+> * **IN = toward the camera**
+> * **OUT = away from the camera**
 
 ---
 
@@ -46,121 +62,186 @@ top of image
 +----------------------------------------→ x
 ```
 
-* **Y-axis increases downward** (image coordinates).
-* The **curve** spans the doorway area.
-* People walking **upward (toward camera)** are **entering (IN)**.
-* People walking **downward (away from camera)** are **exiting (OUT)**.
+* **Y-axis increases downward** (OpenCV coordinate system).
+* The **curve** spans the doorway region.
+* People walking **upward (toward camera)** → **IN**.
+* People walking **downward (away from camera)** → **OUT**.
 
 ---
 
 ## **Camera Orientation Conventions**
 
-| Camera Orientation | IN_direction (relative to curve) | Notes                                                                                    |
-| ------------------ | -------------------------------- | ---------------------------------------------------------------------------------------- |
-| Front-facing       | toward_cam                       | User sees people entering toward the camera.                                             |
-| Back-facing        | away_from_cam                    | User sees people moving away from camera; still counted as IN if moving toward entrance. |
-| Left-side          | left                             | IN = left side relative to the curve vector.                                             |
-| Right-side         | right                            | IN = right side relative to the curve vector.                                            |
-| Overhead           | left/right (relative to curve)   | User selects which side counts as IN; consistent screen-based labeling.                  |
+| Camera Orientation | IN_direction (relative to curve) | Notes                                                |
+| ------------------ | -------------------------------- | ---------------------------------------------------- |
+| Front-facing       | `toward_cam`                     | Camera faces entrance; movement toward camera = IN.  |
+| Back-facing        | `away_from_cam`                  | Camera behind crowd; movement away from camera = IN. |
+| Left-side          | `left`                           | IN = motion from left side of curve.                 |
+| Right-side         | `right`                          | IN = motion from right side of curve.                |
+| Overhead           | `left` / `right`                 | Chosen manually; consistent across views.            |
 
-> **Key Principle:** IN/OUT always refers to movement **toward the entrance**. Camera orientation determines which direction relative to the curve corresponds to IN.
+> **Principle:**
+> “IN” always means **toward the entrance**, not necessarily toward the camera.
 
 ---
 
-## **Practical Example**
+## **Curve Management and Configuration Persistence**
 
-1. **Front-facing camera (default)**:
+The **`CurveManager`** (`modules/curve_manager.py`) handles curve setup and persistence.
 
-   * Person **outside** walks **toward camera** → IN.
-   * Person **inside** walks **away from camera** → OUT.
+| Function                                | Description                                                                       |
+| --------------------------------------- | --------------------------------------------------------------------------------- |
+| `load_curve_config()`                   | Loads curve points, orientation, and diagnostics from `config/curve_config.json`. |
+| `create_curve(frame)`                   | Interactive mode — user draws curve directly on frame if no config is found.      |
+| `determine_orientation(sample_anchors)` | Automatically determines orientation when `IN_direction` is `"auto"`.             |
+| `save_curve_config(data)`               | Persists curve points, camera orientation, and diagnostics for reuse.             |
 
-2. **Back-facing camera**:
+### **Automatic Handling Flow**
 
-   * Person **outside** walks **away from camera toward entrance** → IN.
-   * Person **inside** walks **toward camera (leaving entrance)** → OUT.
+1. On startup, the system checks if `curve_config.json` exists.
+2. If **missing**, the user is prompted to draw a curve interactively.
+3. The curve is saved with:
 
-3. **Side-facing camera**:
+   ```json
+   { "IN_direction": "auto" }
+   ```
+4. When people start moving, the system collects sample points.
+5. Once enough samples are collected, **`auto_orient_curve()`** detects orientation.
+6. The result, along with detailed diagnostics, is saved back to `curve_config.json`.
 
-   * Must define which side of the curve counts as IN (left or right).
+---
 
-4. **Overhead camera**:
+## **Auto Orientation and Diagnostics**
 
-   * User chooses IN side; labeling is consistent for all detected trajectories.
+When `IN_direction` is `"auto"`, the system calls:
+
+```python
+auto_orient_curve(curve_points, sample_anchors, eps=3.0, min_crossings=1)
+```
+
+This computes:
+
+* The likely direction of **IN vs OUT**
+* A set of metrics showing how the decision was made
+
+Example diagnostic output (persisted in config):
+
+```json
+{
+  "num_samples": 15,
+  "num_crossings": 1,
+  "crossings": [[0, 14, 1.0, -1.0, 114.93]],
+  "candidates": {"+1": 0, "-1": 114.93},
+  "orientation": -1,
+  "camera_convention": "facing_entrance"
+}
+```
+
+These diagnostics are saved to `curve_config.json`:
+
+```json
+{
+  "curve_points": [[461,366], [555,418], [674,438], [721,421]],
+  "IN_direction": "auto",
+  "orientation": -1,
+  "camera_orientation": "facing_entrance",
+  "orientation_diagnostics": {
+    "num_samples": 15,
+    "num_crossings": 1,
+    "orientation": -1
+  }
+}
+```
+
+On the next run, orientation is reused — no recalibration needed.
 
 ---
 
 ## **Counting Mechanism**
 
 1. **Curve Definition**
-   Defined in `config/curve_config.json` as a polyline across the entrance. Optionally, it can include `IN_direction` (front/back/left/right).
+   User defines the curve via `CurveManager.create_curve()` or loads from config.
 
 2. **Signed Distance Calculation**
-   Each detected person’s position (e.g., bounding box center) is compared to the curve using
-   `signed_distance_to_curve(pt, curve)` → yields **positive/negative distance**.
+   Each tracked person’s anchor point (bottom of bounding box) is compared to the curve:
 
-3. **Auto Orientation**
-   `auto_orient_curve(curve, trajectory_sample)` analyzes a subset of points to determine which side of the curve corresponds to **IN** when `IN_direction` is not predefined.
+   ```python
+   signed_distance_to_curve(point, curve)
+   ```
 
-4. **Labeling**
-   Once orientation is determined:
+3. **Orientation Application**
+   Signed distances are multiplied by the curve orientation (`+1` or `-1`).
 
-   * **Positive oriented distance → IN**
-   * **Negative oriented distance → OUT**
-
----
-
-## **Key Modules**
-
-| Module                           | Purpose                                                                      |
-| -------------------------------- | ---------------------------------------------------------------------------- |
-| `modules/curve_utils.py`         | Loads and manages curve configurations.                                      |
-| `modules/tracker_logic.py`       | Core geometric logic and `signed_distance_to_curve`.                         |
-| `modules/orientation.py`         | Contains `auto_orient_curve` for determining IN/OUT direction automatically. |
-| `utils/viz_tools.py`             | Visualization and debugging utilities.                                       |
-| `main.py`                        | Entry point for live or recorded video processing.                           |
-| `test_trajectory_orientation.py` | Offline testing for trajectory-based IN/OUT labeling.                        |
+4. **Counting**
+   When a track crosses from one side of the curve to the other, `update_track_state()` increments the **IN** or **OUT** counter.
 
 ---
 
-## **Test Mode (Offline Validation)**
+## **Running the System**
 
-Run offline trajectory tests:
+### **Live or Recorded Video**
+
+```bash
+python main.py
+```
+
+* Draw the curve when prompted (if config missing)
+* The system will:
+
+  * Detect and track people
+  * Automatically learn the correct IN/OUT orientation
+  * Save results in `config/curve_config.json`
+
+---
+
+## **Offline Testing (Trajectory Mode)**
+
+Run this mode to test orientation detection and labeling logic without video:
 
 ```bash
 python test_trajectory_orientation.py
 ```
 
-* Loads curve from `config/curve_config.json`
-* Loads/defines trajectory points
-* Applies `auto_orient_curve`
-* Outputs: raw signed distance, oriented distance, and label (**IN/OUT**) for each point
+This script:
+
+* Loads the saved curve configuration
+* Simulates sample trajectories
+* Evaluates `auto_orient_curve`
+* Prints raw distances and IN/OUT classification
+
+---
+
+## **Key Modules**
+
+| Module                           | Description                                            |
+| -------------------------------- | ------------------------------------------------------ |
+| `modules/curve_manager.py`       | Curve creation, persistence, and diagnostics handling. |
+| `modules/orientation.py`         | Auto orientation logic and diagnostic computation.     |
+| `modules/tracker_logic.py`       | Curve crossing and IN/OUT counting logic.              |
+| `utils/viz_tools.py`             | Visualization and trajectory plotting.                 |
+| `main.py`                        | Entry point for real-time counting.                    |
+| `test_trajectory_orientation.py` | Offline diagnostic testing for curve orientation.      |
 
 ---
 
 ## **Parked / To-Revisit Items**
 
 1. **Gray-zone hysteresis**
+   Add tolerance near the curve to avoid double counts.
 
-   * Introduce a pixel buffer around the curve to prevent miscounts due to small fluctuations (“flapping”).
-   * Disabled in trajectory tests for simplicity.
+2. **Dynamic camera flip detection**
+   Auto-detect when the camera’s facing direction changes.
 
-2. **Auto-orientation check**
+3. **Real-world mapping**
+   Use homography to project image coordinates into real-world distances.
 
-   * Tested for trajectory CSVs.
-   * May exhibit bias if initial movement samples are unbalanced (e.g., “morning bias”).
-
-3. **Dynamic camera flip detection**
-
-   * Detect camera rotation, flip, or mirror changes during operation.
-
-4. **World-space mapping / real-world coordinates**
-
-   * Future enhancement for multi-camera setups or moving cameras.
+4. **Diagnostics visualization overlay**
+   Display diagnostic values directly in live video for debugging.
 
 ---
 
 ## **Next Steps**
 
-* Validate IN/OUT labeling using recorded or live footage.
-* Integrate gray-zone hysteresis and dynamic orientation updates.
-* Add real-time visualization overlays to verify classification accuracy.
+* ✅ Validate `orientation_diagnostics` persistence and reuse
+* 🧭 Add live visualization for IN/OUT classification
+* ⚙️ Tune `auto_orient_curve` parameters for stability
+* 📊 Extend `viz_tools` to overlay curve and IN/OUT sides on video feed
